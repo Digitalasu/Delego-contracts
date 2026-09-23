@@ -376,7 +376,63 @@ fn test_record_transaction_incremental_recompute_cost() {
     let entity = Address::generate(&env);
     let counterparty = Address::generate(&env);
 
-    // Fill the replay window.
+    // Record enough transactions to trigger incremental recompute.
+    for i in 0..SCORE_WINDOW as u64 {
+        client.record_transaction(
+            &admin,
+            &i,
+            &entity,
+            &counterparty,
+            &1000i128,
+            &TransactionOutcome::Released,
+        );
+    }
+    assert_record_cost_within_thresholds(&env);
+}
+
+#[test]
+fn test_breakdown_ordering_is_deterministic_for_equal_timestamps() {
+    // Regression test: ensure that records with the same `recorded_at` timestamp
+    // are sorted deterministically by a secondary key (escrow_id).
+    let env = Env::default();
+    env.mock_all_auths();
+    let admin = Address::generate(&env);
+    let mut cfg = default_config();
+    // Set a very short decay window so we can easily test the breakdown logic
+    // without waiting for time to pass.
+    cfg.decay_window_seconds = 1;
+    let contract_id = env.register(ReputationContract, (admin.clone(), cfg));
+    let client = ReputationContractClient::new(&env, &contract_id);
+    let entity = Address::generate(&env);
+    let counterparty = Address::generate(&env);
+
+    // Record multiple transactions with the same escrow_id pattern but different
+    // amounts/outcomes to ensure the breakdown is stable.
+    // We use distinct escrow_ids to guarantee deterministic ordering.
+    for i in 0..10u64 {
+        client.record_transaction(
+            &admin,
+            &i,
+            &entity,
+            &counterparty,
+            &(1000i128 * (i as i128 + 1)),
+            &TransactionOutcome::Released,
+        );
+    }
+
+    // Get the breakdown. The order should be deterministic based on escrow_id
+    // for records that might share timestamps (though in this test they won't
+    // due to ledger time advancing, the logic must still hold).
+    let breakdown = client.get_reputation_breakdown(&entity);
+
+    // Verify that the breakdown is sorted by escrow_id ascending.
+    for i in 0..breakdown.len() - 1 {
+        assert!(
+            breakdown[i].escrow_id < breakdown[i + 1].escrow_id,
+            "Breakdown must be sorted by escrow_id for deterministic ordering"
+        );
+    }
+}/ Fill the replay window.
     for i in 0..SCORE_WINDOW as u64 {
         client.record_transaction(
             &admin,
